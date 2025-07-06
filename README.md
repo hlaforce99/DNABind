@@ -1,7 +1,7 @@
 # DNABind: DNA/RNA-Ligand Binding Free Energy Pipeline
 
 This pipeline estimates the binding free energy of a small molecule ligand to a DNA or RNA target using OpenMM molecular dynamics and a population-based estimator (with deeptime and MDTraj).  
-It’s fully automated and reproducible: just provide a PDB ID and ligand residue name.
+It's fully automated and reproducible: just provide a PDB ID and ligand residue name.
 
 ---
 
@@ -20,9 +20,9 @@ It’s fully automated and reproducible: just provide a PDB ID and ligand residu
 
 1. **System Building**: Downloads and prepares a solvated, parameterized system from a PDB ID.
 2. **Binding Site Definition**:
-   - Automatic: Identifies residues within a specified distance of the ligand.
-   - Manual: Lets you specify residues by chain and number.
-4. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator.
+   - **Automatic**: Identifies residues within a specified distance of the ligand.
+   - **Manual**: Lets you specify residues by chain and number.
+3. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator, with **error bars via block averaging**.
 
 ---
 
@@ -35,27 +35,35 @@ chmod +x wrapper.sh
 
 ### **2. Run the pipeline**
 ```bash
-./wrapper.sh PDB_ID LIGAND_RESNAME [BOX_SIZE_NM] [MD_STEPS]
+./wrapper.sh PDB_ID LIGAND_RESNAME [BOX_SIZE_NM] [MD_STEPS] [BLOCKS]
 ```
 - `PDB_ID`: e.g., `7KWK`
 - `LIGAND_RESNAME`: 3-letter ligand code, e.g., `X8V`
 - `BOX_SIZE_NM` (optional): Water box padding in nm (default: 1.0)
 - `MD_STEPS` (optional): Number of MD steps (default: 500000; 500,000 × 2 fs = 1 ns)
+- `BLOCKS` (optional): Number of blocks for error estimation (default: 5)
 
 **Example:**
 ```bash
 ./wrapper.sh 7KWK X8V
 ```
+or with custom MD steps and blocks:
+```bash
+./wrapper.sh 7KWK X8V 1.0 1000000 10
+```
+
 ---
 
 ## **Manual Binding Site Selection**
 
-If you want to specify the binding site manually, run the relevant step directly in the wrapper script:
+If you want to specify the binding site manually, edit the wrapper script or run the step directly:
+
+**Edit the wrapper script** to comment out the automatic line and add your manual selection, e.g.:
 ```bash
+# python define_binding_site.py --pdb <PDBID>_system_structure.pdb --ligand <LIGAND> --cutoff 5.0 --out binding_site.json
 python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:10" "A:12" "B:5" --out binding_site.json
 ```
-
----
+Or run this command manually before continuing the pipeline.
 
 ---
 
@@ -64,9 +72,9 @@ python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:1
 - `<PDBID>_system_structure.pdb`: Solvated, fixed structure
 - `<PDBID>_system_system.xml`: OpenMM system file
 - `<PDBID>_system_integrator.xml`: OpenMM integrator file
-- `binding_site.json`: Binding site residue list
+- `binding_site.json`: Binding site residue list (automatic or manual)
 - `traj.pdb`: MD trajectory (PDB format)
-- `binding_energy_result.json`: Binding free energy estimate
+- `binding_energy_result.json`: Binding free energy estimate, **with error bars and wall time**
 
 ---
 
@@ -91,7 +99,11 @@ python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:1
   - **Manual:** User-specified residues.
 - **Simulation:** Minimization, equilibration, and production MD (default 1 ns).
 - **Free Energy:** Classifies each frame as "bound" or "unbound" and estimates  
-ΔG = -kT ln(P_bound / P_unbound)
+  \[
+  \Delta G = -kT \ln\left(\frac{P_\text{bound}}{P_\text{unbound}}\right)
+  \]
+  - **Error bars** are computed by block averaging over the trajectory (number of blocks set by `--blocks`).
+- **Timing:** The total wall time for simulation and analysis is reported and saved in the output JSON.
 
 ---
 
@@ -115,5 +127,4 @@ python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:1
 ## **Contact**
 
 For questions or issues, contact Hunter La Force at hunterlaforce61@gmail.com.
-
 
