@@ -74,7 +74,7 @@ Or run this command manually before continuing the pipeline.
 - `<PDBID>_system_integrator.xml`: OpenMM integrator file
 - `binding_site.json`: Binding site residue list (automatic or manual)
 - `traj.pdb`: MD trajectory (PDB format)
-- `binding_energy_result.json`: Binding free energy estimate, **with error bars and wall time**
+- `binding_energy_result.json`: Binding free energy estimate, with error bars and wall time
 
 ---
 
