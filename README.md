@@ -19,8 +19,10 @@ It’s fully automated and reproducible: just provide a PDB ID and ligand residu
 ## **Pipeline Overview**
 
 1. **System Building**: Downloads and prepares a solvated, parameterized system from a PDB ID.
-2. **Binding Site Definition**: Identifies residues near the ligand.
-3. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator.
+2. **Binding Site Definition**:
+   - Automatic: Identifies residues within a specified distance of the ligand.
+   - Manual: Lets you specify residues by chain and number.
+4. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator.
 
 ---
 
@@ -44,6 +46,16 @@ chmod +x wrapper.sh
 ```bash
 ./wrapper.sh 7KWK X8V
 ```
+---
+
+## **Manual Binding Site Selection**
+
+If you want to specify the binding site manually, run the relevant step directly in the wrapper script:
+```bash
+python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:10" "A:12" "B:5" --out binding_site.json
+```
+
+---
 
 ---
 
@@ -74,7 +86,9 @@ chmod +x wrapper.sh
 ## **How It Works**
 
 - **System Preparation:** Uses AMBER force fields with OpenMM and PDBFixer.
-- **Binding Site:** Residues within 5 Å of ligand atoms.
+- **Binding Site:**
+  - **Automatic:** Residues within 5 Å of ligand atoms.
+  - **Manual:** User-specified residues.
 - **Simulation:** Minimization, equilibration, and production MD (default 1 ns).
 - **Free Energy:** Classifies each frame as "bound" or "unbound" and estimates  
 ΔG = -kT ln(P_bound / P_unbound)
