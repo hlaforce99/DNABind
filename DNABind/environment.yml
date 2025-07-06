@@ -1,0 +1,14 @@
+name: DNABind
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openmm
+  - pdbfixer
+  - mdtraj
+  - biopython
+  - numpy
+  - pip
+  - pip:
+      - deeptime
+
