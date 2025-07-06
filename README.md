@@ -35,14 +35,14 @@ chmod +x wrapper.sh
 ```bash
 ./wrapper.sh PDB_ID LIGAND_RESNAME [BOX_SIZE_NM] [MD_STEPS]
 ```
-- `PDB_ID`: e.g., `1D66`
-- `LIGAND_RESNAME`: 3-letter ligand code, e.g., `DAN`
+- `PDB_ID`: e.g., `7KWK`
+- `LIGAND_RESNAME`: 3-letter ligand code, e.g., `X8V`
 - `BOX_SIZE_NM` (optional): Water box padding in nm (default: 1.0)
 - `MD_STEPS` (optional): Number of MD steps (default: 500000; 500,000 × 2 fs = 1 ns)
 
 **Example:**
 ```bash
-./wrapper.sh 1D66 DAN
+./wrapper.sh 7KWK X8V
 ```
 
 ---
