@@ -1,4 +1,4 @@
-# DNA/RNA-Ligand Binding Free Energy Pipeline
+# DNABind: DNA/RNA-Ligand Binding Free Energy Pipeline
 
 This pipeline estimates the binding free energy of a small molecule ligand to a DNA or RNA target using OpenMM molecular dynamics and a population-based estimator (with deeptime and MDTraj).  
 It’s fully automated and reproducible: just provide a PDB ID and ligand residue name.
