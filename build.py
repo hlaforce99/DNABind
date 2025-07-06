@@ -14,7 +14,8 @@ def build_system(pdb_id, output_prefix="output", box_padding=1.0):
     fixer.findMissingResidues()
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
-    fixer.addMissingHydrogens(pH=7.0)
+    fixer.addMissingHydrogens(pH=7.4)
+    fixer.removeHeterogens(True)  # True: remove water and all heterogens
     
     # Step 2: Write fixed structure to temp file
     with open(f"{output_prefix}_fixed.pdb", "w") as f:
@@ -63,7 +64,7 @@ def build_system(pdb_id, output_prefix="output", box_padding=1.0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build an OpenMM-ready system from a PDB ID.")
-    parser.add_argument("--pdb", help="PDB ID (e.g., 1D66)", required=True)
+    parser.add_argument("--pdb", help="PDB ID (e.g., 7KWK)", required=True)
     parser.add_argument("--prefix", help="Output file prefix", default="output")
     parser.add_argument("--box", type=float, help="Solvent box padding in nm", default=1.0)
     args = parser.parse_args()
