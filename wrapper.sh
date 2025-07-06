@@ -18,10 +18,10 @@ BLOCKS=${5:-5}
 
 PREFIX="${PDBID}_system"
 
-echo "=== [1/3] Building system with build.py ==="
+echo "=== [1/4] Building system with build.py ==="
 python build.py --pdb $PDBID --prefix $PREFIX --box $BOX
 
-echo "=== [2/3] Defining binding site with define_binding_site.py ==="
+echo "=== [2/4] Defining binding site with define_binding_site.py ==="
 
 # --- Automatic mode (default): residues within 5 Å of ligand ---
 python define_binding_site.py --pdb ${PREFIX}_structure.pdb --ligand $LIGAND --cutoff 5.0 --out binding_site.json
@@ -29,7 +29,7 @@ python define_binding_site.py --pdb ${PREFIX}_structure.pdb --ligand $LIGAND --c
 # --- Manual mode: uncomment and edit the next line to specify residues manually ---
 # python define_binding_site.py --pdb ${PREFIX}_structure.pdb --residues "A:10" "B:15" --out binding_site.json
 
-echo "=== [3/3] Running MD and free energy calculation with run_free_energy.py ==="
+echo "=== [3/4] Running MD and free energy calculation with run_free_energy.py ==="
 python run_free_energy.py \
   --system ${PREFIX}_system.xml \
   --integrator ${PREFIX}_integrator.xml \
@@ -42,6 +42,17 @@ python run_free_energy.py \
   --cutoff 0.5 \
   --blocks $BLOCKS
 
+echo "=== [4/4] Running alchemical FEP/TI with run_fep.py ==="
+# Adjust --nsteps and --windows as needed for speed/accuracy
+python run_fep.py \
+  --system ${PREFIX}_system.xml \
+  --integrator ${PREFIX}_integrator.xml \
+  --pdb ${PREFIX}_structure.pdb \
+  --ligand $LIGAND \
+  --nsteps 5000 \
+  --windows 8 \
+  --output_prefix ${PREFIX}
+
 echo "=== Pipeline complete! ==="
 echo "Key outputs:"
 echo "  - ${PREFIX}_structure.pdb"
@@ -50,3 +61,4 @@ echo "  - ${PREFIX}_integrator.xml"
 echo "  - binding_site.json"
 echo "  - traj.pdb"
 echo "  - binding_energy_result.json (see this for your binding free energy estimate with error bars and timing)"
+echo "  - ${PREFIX}_fep_result.json (see this for alchemical FEP/TI ΔG)"
