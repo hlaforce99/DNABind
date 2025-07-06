@@ -77,7 +77,7 @@ chmod +x wrapper.sh
 - **Binding Site:** Residues within 5 Å of ligand atoms.
 - **Simulation:** Minimization, equilibration, and production MD (default 1 ns).
 - **Free Energy:** Classifies each frame as "bound" or "unbound" and estimates  
-  \[\Delta G = -kT \ln(P_{\text{bound}} / P_{\text{unbound}})\]
+ΔG = -kT ln(P_bound / P_unbound)
 
 ---
 
