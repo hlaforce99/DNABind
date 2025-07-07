@@ -13,7 +13,11 @@ It's fully automated and reproducible: just provide a PDB ID and ligand residue 
   ```bash
   conda install -c conda-forge openmm pdbfixer mdtraj deeptime biopython numpy
   ```
-
+- (Optional, for ML potential integration):
+    - [TochMD-NET](https://github.com/torchmd/torchmd-net?locale=en) (for ML-based force fields)
+      ```bash
+      pip install torchmd-net
+      ```
 ---
 
 ## **Pipeline Overview**
@@ -22,7 +26,7 @@ It's fully automated and reproducible: just provide a PDB ID and ligand residue 
 2. **Binding Site Definition**:
    - **Automatic**: Identifies residues within a specified distance of the ligand.
    - **Manual**: Lets you specify residues by chain and number.
-3. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator, with **error bars via block averaging**.
+3. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator, with error bars via block averaging.
 
 ---
 
@@ -52,6 +56,42 @@ or with custom MD steps and blocks:
 ./wrapper.sh 7KWK X8V 1.0 1000000 10
 ```
 
+---
+## **ML Potential Integration (TorchMD-NET)**
+
+You can optionally replace the calssical bonded and van der Waals (vdW) force fields terms with a machine learning potential trained with [TorchMD-NET](https://github.com/torchmd/torchmd-net?locale=en).
+
+- **When enabled, the pipeline will:**
+    - Remove all classical bonded and vdW terms from the OpenMM system.
+    - Add a TorchMD-NET force using your trained model (model.pt).
+      
+- **Requirements:**
+    - Install TorchMD-NET:
+    ```bash
+    pip install torchmd-net
+    ```
+    - Provide a trained TorchMD-NET model checkpoint (see below).
+
+- **How to enable:**
+    - Add `--ml_potential` and `--ml_model_path/path/to/model.pt` when calling `build.py` (or modify `wrapper.sh` to add these arguments).
+**Example:**
+```bash
+python build.py --pdb 7KWK --prefix 7KWK_system --box 1.0 --ml_potential --ml_model_path /path/to/best_model.pt
+```
+Or, if you add these variables to your `wrapper.sh`, you can run:
+```bash
+ML_MODEL_PATH=/path/to/best_model.pt ./wrapper.sh 7KWK X8V
+```
+
+- **How to train a TorchMD-NET model:**
+    - Prepare a dateset of structures with energies/forces (see [TorchMD-NET docs](https://torchmd-net.readthedocs.io/en/latest/?locale=en)).
+    - Write a config YAML file specifying the training parameters and data paths.
+    - Train with:
+      ```bash
+      torchmd-train --config config.yaml
+      ```
+    - Use the resuling `best_model.pt` as your `--ml_model_path`.
+---
 ---
 
 ## **Manual Binding Site Selection**
@@ -84,6 +124,7 @@ Or run this command manually before continuing the pipeline.
 ├── build.py
 ├── define_binding_site.py
 ├── run_free_energy.py
+├── run_fep.py
 ├── wrapper.sh
 ├── README.md
 ├── environment.yml (optional)
@@ -121,6 +162,7 @@ Or run this command manually before continuing the pipeline.
 - PDBFixer: [https://github.com/openmm/pdbfixer](https://github.com/openmm/pdbfixer)
 - MDTraj: [http://mdtraj.org/](http://mdtraj.org/)
 - deeptime: [https://deeptime.com/](https://deeptime.com/)
+- TorchMD-NET: [https://github.com/torchmd/torchmd-net](https://github.com/torchmd/torchmd-net)
 
 ---
 
