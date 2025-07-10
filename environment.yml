@@ -1,14 +1,17 @@
 name: DNABind
 channels:
   - conda-forge
+  - defaults
 dependencies:
-  - python=3.11
+  - python=3.9
   - openmm
+  - ambertools
   - pdbfixer
-  - mdtraj
   - biopython
   - numpy
+  - mdtraj
+  - openmmforcefields
   - pip
   - pip:
-      - deeptime
-
+      # For optional ML potentials (TorchMD-NET), uncomment the next line:
+      # - torchmd-net
