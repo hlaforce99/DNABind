@@ -15,6 +15,8 @@ import json
 import numpy as np
 import time
 import sys
+import os
+import glob
 
 from openmm.app import PDBFile, Simulation, StateDataReporter, DCDReporter
 from openmm import (
@@ -155,16 +157,19 @@ def create_ligand_wall_restraint(
 
 
 def add_com_restraint(system, atom_indices, k_rest=0.01):
-    """
-    Add a weak harmonic restraint to keep the center of mass of a group
-    (e.g., DNA) near the box center.
-    """
-
     expr = "k_rest*((x-x0)^2 + (y-y0)^2 + (z-z0)^2)"
     force = CustomExternalForce(expr)
-    box_center = [
-        0.5 * system.getDefaultPeriodicBoxVectors()[i][i]._value for i in range(3)
-    ]
+
+    # Add per-particle parameters in order of their appearance in the expression
+    force.addPerParticleParameter("k_rest")
+    force.addPerParticleParameter("x0")
+    force.addPerParticleParameter("y0")
+    force.addPerParticleParameter("z0")
+
+    # Get the box center
+    box_vectors = system.getDefaultPeriodicBoxVectors()
+    box_center = [0.5 * box_vectors[i][i]._value for i in range(3)]
+
     for idx in atom_indices:
         force.addParticle(idx, [k_rest, *box_center])
     system.addForce(force)
@@ -296,6 +301,15 @@ def run_md_with_metadynamics(
     with open(equilibrated_pdb, "w") as f:
         PDBFile.writeFile(pdb.topology, eq_positions, f, keepIds=True)
     print(f"Saved equilibrated structure to {equilibrated_pdb}")
+
+    equilibrated_system_xml = f"{output_prefix}_equilibrated_system.xml"
+    equilibrated_integrator_xml = f"{output_prefix}_equilibrated_integrator.xml"
+    with open(equilibrated_system_xml, "w") as f:
+        f.write(XmlSerializer.serialize(simulation_eq.system))
+    with open(equilibrated_integrator_xml, "w") as f:
+        f.write(XmlSerializer.serialize(integrator_eq))
+    print(f"Saved equilibrated system to {equilibrated_system_xml}")
+    print(f"Saved equilibrated integrator to {equilibrated_integrator_xml}")
 
     # --- Metadynamics Setup ---
     # The CV is the centroid distance between ligand and binding site
@@ -439,6 +453,96 @@ def analyze_binding_trajectory(
 
     stats = block_average_deltaG(bound, kT=2.479, n_blocks=n_blocks)
     return stats, bound, centroid_dist
+
+
+def cleanup_pipeline_directory(prefix="output"):
+    """
+    Remove all files in the working directory that are not needed for further analysis.
+    Keeps only:
+      - <prefix>_equilibrated.pdb
+      - <prefix>_equilibrated_system.xml
+      - <prefix>_equilibrated_integrator.xml
+      - binding_site.json
+      - traj.dcd
+      - binding_energy_result.json
+      - <prefix>_bound_unbound.npy
+    Removes:
+      - bias_*.npy
+      - Metadynamics_Bias_Over_Time.png
+      - intermediate and build files
+      - anything not in the keep-list
+    """
+    keep_files = {
+        f"{prefix}_equilibrated.pdb",
+        f"{prefix}_equilibrated_system.xml",
+        f"{prefix}_equilibrated_integrator.xml",
+        "binding_site.json",
+        "traj.dcd",
+        "binding_energy_result.json",
+        f"{prefix}_bound_unbound.npy",
+    }
+
+    # Remove all bias_*.npy files
+    for fname in glob.glob("bias_*.npy"):
+        try:
+            os.remove(fname)
+            print(f"Removed {fname}")
+        except Exception as e:
+            print(f"Could not remove {fname}: {e}")
+
+    # Remove other known unnecessary files
+    extra_files = [
+        "Metadynamics_Bias_Over_Time.png",
+        f"{prefix}_structure.pdb",
+        f"{prefix}_system.xml",
+        f"{prefix}_integrator.xml",
+        f"{prefix}.inpcrd",
+        f"{prefix}.prmtop",
+    ]
+    for fname in extra_files:
+        if os.path.isfile(fname) and fname not in keep_files:
+            try:
+                os.remove(fname)
+                print(f"Removed {fname}")
+            except Exception as e:
+                print(f"Could not remove {fname}: {e}")
+
+    # Remove any file in the directory that is not in keep_files or a script/README/license
+    scripts_and_docs = {
+        "wrapper.sh",
+        "run_free_energy.py",
+        "run_fep.py",
+        "environment.yml",
+        "define_binding_site.py",
+        "build.py",
+        "README.md",
+        "LICENSE",
+    }
+    for fname in os.listdir("."):
+        # skip directories
+        if os.path.isdir(fname):
+            continue
+        if fname in keep_files or fname in scripts_and_docs:
+            continue
+        # Don't remove .py files unless they're in extra_files
+        if fname.endswith(".py") and fname not in extra_files:
+            continue
+        # Don't remove .yml, .md, .sh, LICENSE
+        if fname.endswith((".yml", ".md", ".sh")) or fname == "LICENSE":
+            continue
+        # Don't remove .json if it's binding_site.json or binding_energy_result.json
+        if fname in ("binding_site.json", "binding_energy_result.json"):
+            continue
+        # Remove
+        try:
+            os.remove(fname)
+            print(f"Removed {fname}")
+        except Exception as e:
+            print(f"Could not remove {fname}: {e}")
+
+
+# Example usage at the end of your main() function:
+# cleanup_pipeline_directory(prefix=args.output_prefix)
 
 
 def main():
@@ -603,6 +707,8 @@ def main():
     print(
         f"Centroid distances saved for analysis. ΔG = {deltaG:.2f} ± {deltaG_err:.2f} kJ/mol"
     )
+
+    cleanup_pipeline_directory(prefix=args.output_prefix)
 
 
 if __name__ == "__main__":
