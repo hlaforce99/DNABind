@@ -1,4 +1,14 @@
-# run_free_energy.py
+#!/usr/bin/env python3
+"""
+run_free_energy.py
+
+A pipeline to perform ligand-DNA binding/unbinding free energy calculations using OpenMM and metadynamics.
+- Sets up the system, runs energy minimization and equilibration,
+- Applies wall and COM restraints,
+- Runs production metadynamics MD,
+- Analyzes the resulting trajectory to estimate binding free energy (ΔG).
+
+"""
 
 import argparse
 import json
@@ -13,15 +23,18 @@ from openmm import (
     CustomCentroidBondForce,
     LangevinIntegrator,
     MonteCarloBarostat,
+    CustomExternalForce,
 )
 from openmm.unit import kelvin, bar
 import mdtraj as md
 from openmm.app.metadynamics import Metadynamics, BiasVariable
 
-SOLVENT_IONS = {"HOH", "WAT", "NA", "CL", "K", "MG", "CA", "SO4", "PO4"}
-
 
 def strip_unit(x):
+    """
+    Convert OpenMM Quantity objects to numpy arrays in nanometers.
+    Handles both Quantity and plain arrays.
+    """
     try:
         return np.array(x.value_in_unit(unit.nanometer))
     except AttributeError:
@@ -29,31 +42,31 @@ def strip_unit(x):
 
 
 def load_binding_site(json_file):
+    """
+    Load binding site residue definitions from a JSON file.
+    """
     with open(json_file, "r") as f:
         return json.load(f)
 
 
 def is_heavy_atom(atom):
+    """
+    Returns True if the atom is not a hydrogen (heavy atom).
+    """
     return atom.element.symbol != "H"
 
 
 def get_binding_site_indices(topology, binding_site):
-    if isinstance(topology, md.Topology):
-        md_top = topology
-    else:
-        md_top = md.Topology.from_openmm(topology)
+    """
+    Given an OpenMM topology and a list of binding site residues (dicts),
+    return the indices of all heavy atoms in the site.
+    """
+    md_top = md.Topology.from_openmm(topology)
     table, _ = md_top.to_dataframe()
-    pdbid_to_chain_index = {
-        getattr(chain, "chain_id", None): i
-        for i, chain in enumerate(md_top.chains)
-        if getattr(chain, "chain_id", None) is not None
-    }
+    chain_map = {c.chain_id: i for i, c in enumerate(md_top.chains)}
     indices = []
     for res in binding_site:
-        if res["resname"].strip().upper() in SOLVENT_IONS:
-            continue
-        chain_id = res["chain"]
-        chain_index = pdbid_to_chain_index.get(chain_id)
+        chain_index = chain_map.get(res["chain"])
         if chain_index is None:
             continue
         matches = table[
@@ -69,24 +82,31 @@ def get_binding_site_indices(topology, binding_site):
 
 
 def get_ligand_indices(topology, ligand_resname):
-    if hasattr(topology, "atoms") and not callable(topology.atoms):
-        atoms = topology.atoms
-    else:
-        atoms = topology.atoms()
+    """
+    Return all heavy atom indices for the ligand, given residue name.
+    """
+    atoms = list(topology.atoms()) if callable(topology.atoms) else topology.atoms
     return [
         atom.index
         for atom in atoms
-        if atom.residue.name == ligand_resname and atom.element.symbol != "H"
+        if atom.residue.name == ligand_resname and is_heavy_atom(atom)
     ]
 
 
 def get_centroid(positions, indices):
+    """
+    Compute the centroid of a group of atoms.
+    """
     coords = np.array([strip_unit(positions[i]) for i in indices])
     return coords.mean(axis=0)
 
 
 def filter_atoms_near_centroid(positions, indices, cutoff_nm):
-    if len(indices) == 0:
+    """
+    Select only those atoms within cutoff_nm of the centroid of the group.
+    Used to focus the CV on the 'core' of each group.
+    """
+    if not indices:
         return []
     centroid = get_centroid(positions, indices)
     coords = np.array([strip_unit(positions[i]) for i in indices])
@@ -95,6 +115,10 @@ def filter_atoms_near_centroid(positions, indices, cutoff_nm):
 
 
 def create_centroid_distance_cv(ligand_indices, site_indices):
+    """
+    Create a CustomCentroidBondForce to measure the centroid-centroid distance
+    between ligand and binding site.
+    """
     force = CustomCentroidBondForce(2, "distance(g1,g2)")
     force.addGroup(ligand_indices)
     force.addGroup(site_indices)
@@ -105,12 +129,13 @@ def create_centroid_distance_cv(ligand_indices, site_indices):
 def create_ligand_wall_restraint(
     ligand_indices, box_vectors, wall_buffer=2.0, k_wall=100.0
 ):
+    """
+    Returns a CustomCentroidBondForce that restrains the centroid of a group
+    (e.g., ligand) to stay inside the solvent box, with a soft wall.
+    """
     box_lengths = [box_vectors[i][i]._value for i in range(3)]
-    lower = [wall_buffer, wall_buffer, wall_buffer]
+    lower = [wall_buffer] * 3
     upper = [box_lengths[i] - wall_buffer for i in range(3)]
-    print(
-        f"Wall restraint: lower bounds = {lower}, upper bounds = {upper}, box = {box_lengths}"
-    )
     expr = (
         "step(xmin-x1)*k_wall*(xmin-x1)^2 + step(x1-xmax)*k_wall*(x1-xmax)^2 + "
         "step(ymin-y1)*k_wall*(ymin-y1)^2 + step(y1-ymax)*k_wall*(y1-ymax)^2 + "
@@ -125,102 +150,101 @@ def create_ligand_wall_restraint(
     force.addPerBondParameter("zmin")
     force.addPerBondParameter("zmax")
     force.addPerBondParameter("k_wall")
-    force.addBond(
-        [0],
-        [
-            lower[0],
-            upper[0],
-            lower[1],
-            upper[1],
-            lower[2],
-            upper[2],
-            k_wall,
-        ],
-    )
+    force.addBond([0], [*lower, *upper, k_wall])
     return force
 
 
-def create_centroid_harmonic_restraint(
-    ligand_indices, site_indices, k_rest=1000.0, r0=0.8
-):
-    # Harmonic restraint on the centroid distance, only acts when ligand is far from site
-    expr = "0.5 * k_rest * (distance(g1,g2) - r0)^2"
-    force = CustomCentroidBondForce(2, expr)
-    force.addGroup(ligand_indices)
-    force.addGroup(site_indices)
-    force.addPerBondParameter("k_rest")
-    force.addPerBondParameter("r0")
-    force.addBond([0, 1], [k_rest, r0])
-    return force
+def add_com_restraint(system, atom_indices, k_rest=0.01):
+    """
+    Add a weak harmonic restraint to keep the center of mass of a group
+    (e.g., DNA) near the box center.
+    """
+
+    expr = "k_rest*((x-x0)^2 + (y-y0)^2 + (z-z0)^2)"
+    force = CustomExternalForce(expr)
+    box_center = [
+        0.5 * system.getDefaultPeriodicBoxVectors()[i][i]._value for i in range(3)
+    ]
+    for idx in atom_indices:
+        force.addParticle(idx, [k_rest, *box_center])
+    system.addForce(force)
 
 
-def run_md_metadynamics(
+def run_md_with_metadynamics(
     system_xml,
     pdb_file,
     ligand_indices,
     site_indices,
     nsteps=500000,
-    report_interval=500,
+    report_interval=1000,
     output_traj="traj.dcd",
-    metad_height=50.0,
+    metad_height=10.0,
     metad_sigma_dist=0.2,
-    metad_biasfactor=5,
-    metad_stride=50,
+    metad_biasfactor=10,
+    metad_stride=1000,
     temperature=300,
     pressure=1.0,
     wall_buffer=2.0,
     k_wall=100.0,
-    nvt_steps=5000,
-    npt_steps=10000,
-    eq_steps=5000,
+    nvt_steps=10000,
+    npt_steps=20000,
+    eq_steps=10000,
     output_prefix="output",
-    k_rest=1000.0,
-    r0=0.8,
 ):
-    # --- Load system and structure ---
+    """
+    Main function for running the MD protocol:
+    - Minimization
+    - NVT and NPT equilibration
+    - Metadynamics production
+    - Applies wall and COM restraints
+    Returns: (trajectory_file, topology, equilibrated_pdb_filename)
+    """
+    # Load system and structure
     system = XmlSerializer.deserialize(open(system_xml).read())
     pdb = PDBFile(pdb_file)
     box_vectors = pdb.topology.getPeriodicBoxVectors()
-    print(f"Initial box vectors (nm): {box_vectors}")
 
-    # --- Add wall restraint ---
-    wall_force = create_ligand_wall_restraint(
-        ligand_indices,
-        box_vectors,
-        wall_buffer=wall_buffer,
-        k_wall=k_wall,
+    # Wall restraints for ligand and DNA
+    wall_force_ligand = create_ligand_wall_restraint(
+        ligand_indices, box_vectors, wall_buffer, k_wall
     )
-    system.addForce(wall_force)
-
-    # --- Add harmonic centroid restraint ---
-    harmonic_force = create_centroid_harmonic_restraint(
-        ligand_indices, site_indices, k_rest=k_rest, r0=r0
+    dna_resnames = {"DA", "DT", "DG", "DC"}
+    dna_indices = [
+        atom.index for atom in pdb.topology.atoms() if atom.residue.name in dna_resnames
+    ]
+    wall_force_dna = create_ligand_wall_restraint(
+        dna_indices, box_vectors, wall_buffer, k_wall / 5.0
     )
-    system.addForce(harmonic_force)
+    add_com_restraint(system, dna_indices, k_rest=0.01)
+    system.addForce(wall_force_ligand)
+    system.addForce(wall_force_dna)
 
-    # --- Step 1: Minimization ---
-    integrator_nvt = LangevinIntegrator(
+    # --- Minimization ---
+    integrator = LangevinIntegrator(
         temperature * kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds
     )
-    simulation = Simulation(pdb.topology, system, integrator_nvt)
+    simulation = Simulation(pdb.topology, system, integrator)
     simulation.context.setPositions(pdb.positions)
-    print("Minimizing energy for 5,000 steps...")
+    print("Energy minimization...")
     simulation.minimizeEnergy(maxIterations=5000)
 
-    # --- Step 2: NVT Equilibration (short) ---
+    # --- NVT Equilibration ---
     simulation.context.setVelocitiesToTemperature(temperature * kelvin)
     print(f"NVT equilibration ({nvt_steps} steps)...")
     simulation.step(nvt_steps)
 
-    # --- Step 3: NPT Equilibration (allow box to relax) ---
-    barostat = MonteCarloBarostat(pressure * bar, temperature * kelvin, 25)
+    # --- NPT Equilibration ---
+    barostat = MonteCarloBarostat(pressure * bar, temperature * kelvin)
     system.addForce(barostat)
     integrator_npt = LangevinIntegrator(
         temperature * kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds
     )
     simulation_npt = Simulation(pdb.topology, system, integrator_npt)
+    # Carry over positions/velocities with enforcePeriodicBox=True!
     simulation_npt.context.setPositions(
-        simulation.context.getState(getPositions=True).getPositions()
+        simulation.context.getState(
+            getPositions=True, enforcePeriodicBox=True
+        ).getPositions()
     )
     simulation_npt.context.setVelocities(
         simulation.context.getState(getVelocities=True).getVelocities()
@@ -239,47 +263,42 @@ def run_md_metadynamics(
     )
     simulation_npt.step(npt_steps)
     # Remove barostat for production
-    forces = [system.getForce(i) for i in range(system.getNumForces())]
-    for i, force in enumerate(forces):
-        if isinstance(force, MonteCarloBarostat):
+    for i in reversed(range(system.getNumForces())):
+        if isinstance(system.getForce(i), MonteCarloBarostat):
             system.removeForce(i)
             break
-    # Get new box vectors and positions
+
+    # --- Final NVT Equilibration ---
     state = simulation_npt.context.getState(
-        getPositions=True, getVelocities=True, getEnergy=True, enforcePeriodicBox=True
+        getPositions=True, getVelocities=True, enforcePeriodicBox=True
     )
     positions = state.getPositions()
     velocities = state.getVelocities()
     box_vectors = state.getPeriodicBoxVectors()
-    print(f"Box after NPT: {box_vectors}")
-
-    # --- Step 4: NVT Equilibration (short, to stabilize after pressure) ---
-    integrator_nvt2 = LangevinIntegrator(
+    integrator_eq = LangevinIntegrator(
         temperature * kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds
     )
-    simulation_nvt2 = Simulation(pdb.topology, system, integrator_nvt2)
-    simulation_nvt2.context.setPositions(positions)
-    simulation_nvt2.context.setVelocities(velocities)
-    a, b, c = box_vectors
-    simulation_nvt2.context.setPeriodicBoxVectors(a, b, c)
+    simulation_eq = Simulation(pdb.topology, system, integrator_eq)
+    simulation_eq.context.setPositions(positions)
+    simulation_eq.context.setVelocities(velocities)
+    simulation_eq.context.setPeriodicBoxVectors(*box_vectors)
     print(f"Final NVT equilibration ({eq_steps} steps)...")
-    simulation_nvt2.step(eq_steps)
+    simulation_eq.step(eq_steps)
 
-    # === Save equilibrated structure and state ===
-    eq_state = simulation_nvt2.context.getState(
+    # Save equilibrated structure to PDB file
+    eq_state = simulation_eq.context.getState(
         getPositions=True, enforcePeriodicBox=True
     )
     eq_positions = eq_state.getPositions()
     eq_box = eq_state.getPeriodicBoxVectors()
     equilibrated_pdb = f"{output_prefix}_equilibrated.pdb"
-
-    # Set box vectors in topology before writing
     pdb.topology.setPeriodicBoxVectors(eq_box)
     with open(equilibrated_pdb, "w") as f:
         PDBFile.writeFile(pdb.topology, eq_positions, f, keepIds=True)
     print(f"Saved equilibrated structure to {equilibrated_pdb}")
 
-    # --- Step 5: Production with Metadynamics (NVT) ---
+    # --- Metadynamics Setup ---
+    # The CV is the centroid distance between ligand and binding site
     centroid_dist_force = create_centroid_distance_cv(ligand_indices, site_indices)
     centroid_dist_var = BiasVariable(
         centroid_dist_force,
@@ -299,18 +318,21 @@ def run_md_metadynamics(
         saveFrequency=report_interval,
         biasDir=".",
     )
+
+    # --- Production Simulation with Metadynamics ---
     integrator_prod = LangevinIntegrator(
         temperature * kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds
     )
     simulation_prod = Simulation(pdb.topology, system, integrator_prod)
     simulation_prod.context.setPositions(
-        simulation_nvt2.context.getState(getPositions=True).getPositions()
+        simulation_eq.context.getState(
+            getPositions=True, enforcePeriodicBox=True
+        ).getPositions()
     )
     simulation_prod.context.setVelocities(
-        simulation_nvt2.context.getState(getVelocities=True).getVelocities()
+        simulation_eq.context.getState(getVelocities=True).getVelocities()
     )
-    a, b, c = box_vectors
-    simulation_prod.context.setPeriodicBoxVectors(a, b, c)
+    simulation_prod.context.setPeriodicBoxVectors(*box_vectors)
     dcd_stride = max(1000, report_interval)
     simulation_prod.reporters.append(DCDReporter(output_traj, dcd_stride))
     simulation_prod.reporters.append(
@@ -331,19 +353,19 @@ def run_md_metadynamics(
         f"Production (NVT+MetaD): {nsteps} steps, hill height {metad_height}, sigma {metad_sigma_dist}, stride {metad_stride}, bias factor {metad_biasfactor}"
     )
     meta.step(simulation_prod, nsteps)
-
-    return output_traj, pdb.topology
+    return output_traj, pdb.topology, equilibrated_pdb
 
 
 def block_average_deltaG(bound, kT=2.479, n_blocks=5):
+    """
+    Estimate ΔG and error bars via block averaging of the bound/unbound state array.
+    Returns means and standard deviations for ΔG, P_bound, P_unbound.
+    """
     N = len(bound)
     block_size = N // n_blocks
-    deltaGs = []
-    p_b = []
-    p_ub = []
+    deltaGs, p_b, p_ub = [], [], []
     for i in range(n_blocks):
-        start = i * block_size
-        end = (i + 1) * block_size if i < n_blocks - 1 else N
+        start, end = i * block_size, (i + 1) * block_size if i < n_blocks - 1 else N
         block = bound[start:end]
         p_bound = block.mean()
         p_unbound = 1 - p_bound
@@ -356,32 +378,23 @@ def block_average_deltaG(bound, kT=2.479, n_blocks=5):
             deltaGs.append(np.nan)
             p_b.append(np.nan)
             p_ub.append(np.nan)
-    deltaGs = np.array(deltaGs)
-    p_b = np.array(p_b)
-    p_ub = np.array(p_ub)
+    deltaGs, p_b, p_ub = map(np.array, (deltaGs, p_b, p_ub))
     valid = ~np.isnan(deltaGs)
     if valid.sum() > 0:
-        mean_deltaG = deltaGs[valid].mean()
-        std_deltaG = deltaGs[valid].std(ddof=1)
-        mean_p_bound = p_b[valid].mean()
-        std_p_bound = p_b[valid].std(ddof=1)
-        mean_p_unbound = p_ub[valid].mean()
-        std_p_unbound = p_ub[valid].std(ddof=1)
+        stats = (
+            deltaGs[valid].mean(),
+            deltaGs[valid].std(ddof=1),
+            p_b[valid].mean(),
+            p_b[valid].std(ddof=1),
+            p_ub[valid].mean(),
+            p_ub[valid].std(ddof=1),
+        )
     else:
-        mean_deltaG = std_deltaG = mean_p_bound = std_p_bound = mean_p_unbound = (
-            std_p_unbound
-        ) = None
-    return (
-        mean_deltaG,
-        std_deltaG,
-        mean_p_bound,
-        std_p_bound,
-        mean_p_unbound,
-        std_p_unbound,
-    )
+        stats = (None,) * 6
+    return stats
 
 
-def compute_binding_free_energy(
+def analyze_binding_trajectory(
     traj_file,
     top_pdb_file,
     binding_site,
@@ -389,12 +402,21 @@ def compute_binding_free_energy(
     dist_cutoff=1.5,
     n_blocks=5,
     centroid_cutoff=0.25,
+    output_bound="bound_unbound_states.npy",
 ):
-    top = md.load_topology(top_pdb_file)
-    traj = md.load(traj_file, top=top)
-    site_indices = get_binding_site_indices(traj.topology, binding_site)
-    ligand_indices = get_ligand_indices(traj.topology, ligand_resname)
-
+    """
+    Analyze the trajectory to determine bound/unbound states and estimate ΔG.
+    - Loads trajectory and topology
+    - Applies atom filtering and centroid calculation
+    - Saves bound/unbound state array
+    - Returns (stats, bound_array, centroid_distances)
+    """
+    pdb = PDBFile(top_pdb_file)
+    openmm_top = pdb.topology
+    md_top = md.load_topology(top_pdb_file)
+    traj = md.load(traj_file, top=md_top)
+    site_indices = get_binding_site_indices(openmm_top, binding_site)
+    ligand_indices = get_ligand_indices(openmm_top, ligand_resname)
     ligand_indices_filt = filter_atoms_near_centroid(
         traj.xyz[0], ligand_indices, centroid_cutoff
     )
@@ -404,7 +426,8 @@ def compute_binding_free_energy(
     overlap = set(ligand_indices_filt) & set(site_indices_filt)
     ligand_indices_filt = [i for i in ligand_indices_filt if i not in overlap]
     site_indices_filt = [i for i in site_indices_filt if i not in overlap]
-    if len(ligand_indices_filt) == 0 or len(site_indices_filt) == 0:
+
+    if not ligand_indices_filt or not site_indices_filt:
         print("Error: CV atom selection failed in analysis.")
         sys.exit(1)
 
@@ -412,42 +435,37 @@ def compute_binding_free_energy(
     site_coords = traj.xyz[:, site_indices_filt, :].mean(axis=1)
     centroid_dist = np.linalg.norm(ligand_coords - site_coords, axis=1)
     bound = centroid_dist < dist_cutoff
-    kT = 2.479
-    (
-        mean_deltaG,
-        std_deltaG,
-        mean_p_bound,
-        std_p_bound,
-        mean_p_unbound,
-        std_p_unbound,
-    ) = block_average_deltaG(bound, kT=kT, n_blocks=n_blocks)
-    return (
-        mean_deltaG,
-        std_deltaG,
-        mean_p_bound,
-        std_p_bound,
-        mean_p_unbound,
-        std_p_unbound,
-    )
+    np.save(output_bound, bound)  # Save bound/unbound state for further analysis
+
+    stats = block_average_deltaG(bound, kT=2.479, n_blocks=n_blocks)
+    return stats, bound, centroid_dist
 
 
-if __name__ == "__main__":
+def main():
+    """
+    Main entry point for the pipeline.
+    - Parses arguments
+    - Loads system and binding site
+    - Selects atoms for CV
+    - Runs MD and metadynamics
+    - Analyzes trajectory and saves results
+    """
     parser = argparse.ArgumentParser(
-        description="Run MD and estimate binding free energy using centroid distance CV metadynamics."
+        description="Run ligand-DNA binding/unbinding metadynamics and analyze states."
     )
     parser.add_argument("--system", required=True, help="OpenMM system.xml")
     parser.add_argument("--pdb", required=True, help="Input structure PDB")
     parser.add_argument("--site", required=True, help="Binding site JSON file")
     parser.add_argument(
-        "--ligand", required=True, help="Ligand residue name (e.g., DAN)"
+        "--ligand", required=True, help="Ligand residue name (e.g., X8V)"
     )
-    parser.add_argument("--steps", type=int, default=500000, help="Number of MD steps")
+    parser.add_argument("--steps", type=int, default=500000, help=" 500k ~ 1 ns")
     parser.add_argument(
-        "--interval", type=int, default=500, help="Trajectory/report interval"
+        "--interval", type=int, default=1000, help="Trajectory/report interval"
     )
     parser.add_argument("--traj", default="traj.dcd", help="Output trajectory file")
     parser.add_argument(
-        "--dist_cutoff", type=float, default=1.5, help="Centroid distance cutoff in nm"
+        "--dist_cutoff", type=float, default=1.0, help="Centroid distance cutoff in nm"
     )
     parser.add_argument(
         "--blocks", type=int, default=5, help="Number of blocks for error estimation"
@@ -456,49 +474,46 @@ if __name__ == "__main__":
         "--centroid_cutoff",
         type=float,
         default=0.25,
-        help="Atom must be within this distance (nm) of centroid to be included",
+        help="Max distance from centroid for CV group (nm)",
     )
     parser.add_argument(
         "--metad_height",
         type=float,
-        default=50.0,
+        default=15,
         help="Metadynamics Gaussian height (kJ/mol)",
     )
     parser.add_argument(
         "--metad_sigma_dist",
         type=float,
-        default=0.2,
-        help="Metadynamics Gaussian width for centroid distance CV (nm)",
+        default=0.3,
+        help="Metadynamics Gaussian width (nm)",
     )
     parser.add_argument(
-        "--metad_biasfactor", type=float, default=5.0, help="Metadynamics bias factor"
+        "--metad_biasfactor", type=float, default=10.0, help="Metadynamics bias factor"
     )
     parser.add_argument(
         "--metad_stride",
         type=int,
-        default=50,
+        default=1000,
         help="Metadynamics hill deposition stride",
     )
     parser.add_argument(
-        "--wall_buffer",
-        type=float,
-        default=2.0,
-        help="Buffer (nm) inside box for ligand wall restraint",
+        "--wall_buffer", type=float, default=2.5, help="Buffer (nm) for wall restraint"
     )
     parser.add_argument(
         "--k_wall",
         type=float,
-        default=100.0,
-        help="Force constant (kJ/mol/nm^2) for ligand wall restraint",
+        default=20.0,
+        help="Force constant for wall restraint (kJ/mol/nm^2)",
     )
     parser.add_argument(
-        "--nvt_steps", type=int, default=5000, help="NVT equilibration steps"
+        "--nvt_steps", type=int, default=10000, help="NVT equilibration steps"
     )
     parser.add_argument(
-        "--npt_steps", type=int, default=10000, help="NPT equilibration steps"
+        "--npt_steps", type=int, default=20000, help="NPT equilibration steps"
     )
     parser.add_argument(
-        "--eq_steps", type=int, default=5000, help="Final NVT equilibration steps"
+        "--eq_steps", type=int, default=10000, help="Final NVT equilibration steps"
     )
     parser.add_argument(
         "--temperature", type=float, default=300, help="Simulation temperature (K)"
@@ -507,21 +522,7 @@ if __name__ == "__main__":
         "--pressure", type=float, default=1.0, help="Pressure for NPT (bar)"
     )
     parser.add_argument(
-        "--output_prefix",
-        default="output",
-        help="Prefix for output files (e.g. output_equilibrated.pdb)",
-    )
-    parser.add_argument(
-        "--k_rest",
-        type=float,
-        default=1000.0,
-        help="Force constant (kJ/mol/nm^2) for centroid harmonic restraint",
-    )
-    parser.add_argument(
-        "--r0",
-        type=float,
-        default=0.8,
-        help="Equilibrium centroid distance for harmonic restraint (nm)",
+        "--output_prefix", default="output", help="Prefix for output files"
     )
     args = parser.parse_args()
 
@@ -531,24 +532,24 @@ if __name__ == "__main__":
     binding_site = load_binding_site(args.site)
     site_indices = get_binding_site_indices(topology, binding_site)
     ligand_indices = get_ligand_indices(topology, args.ligand)
-    print(f"Initial ligand indices: {ligand_indices}")
-    print(f"Initial site indices: {site_indices}")
 
+    # Filter CV atoms to those near the centroid (removes flexible tails, etc.)
     ligand_indices_filt = filter_atoms_near_centroid(
         pdb.positions, ligand_indices, args.centroid_cutoff
     )
     site_indices_filt = filter_atoms_near_centroid(
         pdb.positions, site_indices, args.centroid_cutoff
     )
+    # Remove any overlap between site and ligand indices
     overlap = set(ligand_indices_filt) & set(site_indices_filt)
     ligand_indices_filt = [i for i in ligand_indices_filt if i not in overlap]
     site_indices_filt = [i for i in site_indices_filt if i not in overlap]
-    print(f"Ligand CV group: {len(ligand_indices_filt)} atoms")
-    print(f"Site CV group: {len(site_indices_filt)} atoms")
-    if len(ligand_indices_filt) == 0 or len(site_indices_filt) == 0:
+
+    if not ligand_indices_filt or not site_indices_filt:
         print("Error: CV atom selection failed.")
         sys.exit(1)
-    traj_file, top = run_md_metadynamics(
+
+    traj_file, _, equilibrated_pdb = run_md_with_metadynamics(
         args.system,
         args.pdb,
         ligand_indices_filt,
@@ -568,23 +569,22 @@ if __name__ == "__main__":
         npt_steps=args.npt_steps,
         eq_steps=args.eq_steps,
         output_prefix=args.output_prefix,
-        k_rest=args.k_rest,
-        r0=args.r0,
     )
-    equilibrated_pdb = f"{args.output_prefix}_equilibrated.pdb"
-    deltaG, deltaG_err, p_bound, p_bound_err, p_unbound, p_unbound_err = (
-        compute_binding_free_energy(
-            traj_file,
-            equilibrated_pdb,
-            binding_site,
-            args.ligand,
-            dist_cutoff=args.dist_cutoff,
-            n_blocks=args.blocks,
-            centroid_cutoff=args.centroid_cutoff,
-        )
+
+    stats, _, _ = analyze_binding_trajectory(
+        traj_file,
+        equilibrated_pdb,
+        binding_site,
+        args.ligand,
+        dist_cutoff=args.dist_cutoff,
+        n_blocks=args.blocks,
+        centroid_cutoff=args.centroid_cutoff,
+        output_bound=f"{args.output_prefix}_bound_unbound.npy",
     )
+
     t1 = time.time()
     elapsed_sec = t1 - t0
+    deltaG, deltaG_err, p_bound, p_bound_err, p_unbound, p_unbound_err = stats
     with open("binding_energy_result.json", "w") as f:
         json.dump(
             {
@@ -599,3 +599,11 @@ if __name__ == "__main__":
             f,
             indent=2,
         )
+    print(f"Bound/unbound state saved to {args.output_prefix}_bound_unbound.npy")
+    print(
+        f"Centroid distances saved for analysis. ΔG = {deltaG:.2f} ± {deltaG_err:.2f} kJ/mol"
+    )
+
+
+if __name__ == "__main__":
+    main()
