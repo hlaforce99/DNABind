@@ -110,12 +110,13 @@ Alternatively, you can run this command manually before continuing the pipeline.
 
 ## **Outputs**
 
-- `<PDBID>_system_structure.pdb`: Solvated, fixed structure
-- `<PDBID>_system_system.xml`: OpenMM system file
-- `<PDBID>_system_integrator.xml`: OpenMM integrator file
+- `<PDBID>_equilibrated.pdb`: Solvated, equilibrated structure
+- `<PDBID>_equilibrated_system.xml`: OpenMM equilibrated system file
+- `<PDBID>_equilibrated_integrator.xml`: OpenMM equilibrated integrator file
 - `binding_site.json`: Binding site residue list (automatic or manual)
-- `traj.pdb`: MD trajectory (PDB format)
+- `traj.dcd`: MD trajectory (DCD format)
 - `binding_energy_result.json`: Binding free energy estimate, with error bars and wall time
+- `bias_*_num_steps.npy`: Bias from Metadynamics saved as a numpy array
 
 ---
 
