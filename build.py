@@ -1,4 +1,15 @@
-# build.py
+#!/usr/bin/env python3
+"""
+build.py
+
+Builds a solvated DNA/ligand system for OpenMM simulations, using AmberTools for ligand parameterization.
+- Extracts and prepares ligand and DNA coordinates
+- Fixes missing atoms/hydrogens
+- Parameterizes ligand with GAFF/AmberTools
+- Solvates the complex and generates OpenMM system XML files
+- (Optional) Replaces force field with TorchMD-NET ML potential
+
+"""
 
 import argparse
 import os
@@ -10,9 +21,11 @@ import openmm.app as app
 import openmm as mm
 import openmm.unit as unit
 
+# Suppress noisy warnings from OpenMM and PDBFixer
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# Periodic table for electron counting
 PERIODIC_TABLE = {
     "H": 1,
     "C": 6,
@@ -28,6 +41,9 @@ PERIODIC_TABLE = {
 
 
 def atom_element_from_pdb_line(line):
+    """
+    Guess element symbol from PDB line (by element column or atom name).
+    """
     elem = line[76:78].strip().upper()
     if elem:
         return elem
@@ -40,6 +56,9 @@ def atom_element_from_pdb_line(line):
 
 
 def count_ligand_electrons(ligand_atoms):
+    """
+    Count total number of electrons in a ligand, given its atom lines.
+    """
     n_e = 0
     for line in ligand_atoms:
         elem = atom_element_from_pdb_line(line)
@@ -49,6 +68,11 @@ def count_ligand_electrons(ligand_atoms):
 
 
 def extract_ligand_atoms(pdb_filename, ligand_resname=None):
+    """
+    Extract ligand atom lines from PDB file by residue name.
+    If ligand_resname is None, finds the largest HETATM group not in standard residues.
+    Returns (resname, [atom lines])
+    """
     standard = set(["DA", "DT", "DG", "DC", "A", "T", "G", "C", "HOH", "WAT"])
     ligand_lines = []
     if ligand_resname is None:
@@ -78,6 +102,9 @@ def extract_ligand_atoms(pdb_filename, ligand_resname=None):
 
 
 def write_ligand_pdb(ligand_atoms, output_pdb, original_pdb):
+    """
+    Write a PDB file containing only the ligand and relevant CONECT records.
+    """
     ligand_serials = set()
     for line in ligand_atoms:
         if line.startswith(("HETATM", "ATOM")):
@@ -87,12 +114,15 @@ def write_ligand_pdb(ligand_atoms, output_pdb, original_pdb):
             except Exception:
                 continue
     with open(original_pdb, "r") as inp, open(output_pdb, "w") as out:
+        # Copy header/title/remark lines for context
         for line in inp:
             if line.startswith(("HEADER", "TITLE", "REMARK")):
                 out.write(line)
+        # Write ligand atom lines
         for line in ligand_atoms:
             out.write(line)
         inp.seek(0)
+        # Write only CONECT records relevant to ligand
         for line in inp:
             if line.startswith("CONECT"):
                 fields = line.split()
@@ -116,6 +146,10 @@ def write_ligand_pdb(ligand_atoms, output_pdb, original_pdb):
 
 
 def remove_heterogens(input_pdb, output_pdb, keep_resnames=None):
+    """
+    Removes all HETATM lines except for specified residue names (e.g., nucleotides).
+    Keeps all ATOM lines.
+    """
     if keep_resnames is None:
         keep_resnames = ["DA", "DT", "DG", "DC", "A", "T", "G", "C"]
     with open(input_pdb) as inp, open(output_pdb, "w") as out:
@@ -131,6 +165,9 @@ def remove_heterogens(input_pdb, output_pdb, keep_resnames=None):
 
 
 def run(cmd, **kwargs):
+    """
+    Run a shell command, raising an error if it fails.
+    """
     result = subprocess.run(
         cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
     )
@@ -141,6 +178,9 @@ def run(cmd, **kwargs):
 
 
 def fix_ligand_hydrogens(ligand_pdb_in, ligand_pdb_out):
+    """
+    Use PDBFixer to add missing hydrogens to a ligand PDB file.
+    """
     fixer = PDBFixer(filename=ligand_pdb_in)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
@@ -155,6 +195,10 @@ def fix_ligand_hydrogens(ligand_pdb_in, ligand_pdb_out):
 def parameterize_ligand_with_ambertools(
     ligand_pdb, ligand_resname, workdir=".", charge=0, gaff_version="gaff2"
 ):
+    """
+    Parameterize ligand using AmberTools (antechamber + parmchk2).
+    Returns paths to generated mol2 and frcmod files.
+    """
     base = os.path.join(workdir, ligand_resname)
     mol2 = f"{base}.mol2"
     frcmod = f"{base}.frcmod"
@@ -172,6 +216,9 @@ def build_leap_input(
     output_prefix,
     box_padding=1.0,
 ):
+    """
+    Generate a tleap input script for building and solvating the DNA/ligand complex.
+    """
     buffer_angstrom = float(box_padding) * 10.0
     leap = f"""
 source leaprc.gaff2
@@ -194,6 +241,9 @@ quit
 
 
 def cleanup_temp_files(prefix, ligand_resname):
+    """
+    Remove intermediate files generated during system preparation.
+    """
     exts = [
         ".frcmod",
         ".mol2",
@@ -239,6 +289,18 @@ def build_system(
     ligand_charge=0,
     pdb_is_file=False,
 ):
+    """
+    Main workflow to build a solvated DNA/ligand system:
+    - Downloads PDB if needed
+    - Extracts ligand, checks charge/electrons
+    - Removes heterogens from DNA
+    - Adds missing atoms/hydrogens
+    - Parameterizes ligand with AmberTools
+    - Builds complex and solvates with tleap
+    - Saves OpenMM system and integrator XML files
+    - (Optional) swaps force field for TorchMD-NET ML potential
+    """
+    # Download PDB if needed
     if pdb_is_file:
         pdb_filename = pdb_id
     else:
@@ -253,6 +315,7 @@ def build_system(
                     .decode()
                 )
 
+    # Extract ligand
     ligand_atoms = []
     ligand_pdb = None
     if ligand_resname:
@@ -285,10 +348,12 @@ def build_system(
     else:
         ligand_pdb = None
 
+    # Prepare DNA (remove all heterogens except canonical bases)
     keep_resnames = ["DA", "DT", "DG", "DC", "A", "T", "G", "C"]
     dna_only_pdb = f"{output_prefix}_dna_only.pdb"
     remove_heterogens(pdb_filename, dna_only_pdb, keep_resnames=keep_resnames)
 
+    # Add missing atoms/hydrogens to DNA
     fixer = PDBFixer(filename=dna_only_pdb)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
@@ -300,6 +365,7 @@ def build_system(
     with open(fixed_pdb_filename, "w") as f:
         app.PDBFile.writeFile(fixer.topology, fixer.positions, f)
 
+    # Parameterize ligand
     if ligand_pdb and os.path.getsize(ligand_pdb) > 0:
         mol2, frcmod = parameterize_ligand_with_ambertools(
             ligand_pdb, ligand_resname, workdir=".", charge=ligand_charge
@@ -308,6 +374,7 @@ def build_system(
         mol2 = None
         frcmod = None
 
+    # Build and solvate with tleap
     if mol2 and frcmod:
         leap_script = build_leap_input(
             fixed_pdb_filename,
@@ -328,11 +395,13 @@ def build_system(
         sys.stderr.write("ERROR: Ligand parameterization failed or ligand not found.\n")
         sys.exit(1)
 
+    # Create OpenMM system from Amber files
     system = prmtop.createSystem(
         nonbondedMethod=app.PME,
         nonbondedCutoff=1.0 * unit.nanometer,
         constraints=app.HBonds,
     )
+    # Optionally replace with TorchMD-NET ML potential
     if ml_potential:
         try:
             from torchmdnet.openmm import TorchMDForce
@@ -344,6 +413,7 @@ def build_system(
                 "ERROR: Must provide --ml_model_path when --ml_potential is enabled.\n"
             )
             sys.exit(1)
+        # Remove classical forces
         forces_to_remove = []
         for i, force in enumerate(system.getForces()):
             if force.__class__.__name__ in [
@@ -358,6 +428,7 @@ def build_system(
         torchmd_force = TorchMDForce(ml_model_path)
         system.addForce(torchmd_force)
 
+    # Save output files
     structure_pdb = f"{output_prefix}_structure.pdb"
     with open(structure_pdb, "w") as f:
         app.PDBFile.writeFile(modeller.topology, modeller.positions, f)
@@ -367,6 +438,7 @@ def build_system(
         integrator = mm.LangevinIntegrator(300, 1.0, 0.002)
         f.write(mm.XmlSerializer.serialize(integrator))
 
+    # Clean up temp files
     cleanup_temp_files(output_prefix, ligand_resname)
 
 
