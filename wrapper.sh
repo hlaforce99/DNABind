@@ -13,7 +13,7 @@ fi
 PDBID=$1
 LIGAND=$2
 BOX=${3:-1.0}
-STEPS=${4:-1000000}
+STEPS=${4:-500000}
 BLOCKS=${5:-5}
 
 PREFIX="output"
@@ -54,4 +54,5 @@ echo "  - ${PREFIX}_system.xml"
 echo "  - ${PREFIX}_integrator.xml"
 echo "  - binding_site.json"
 echo "  - traj.dcd"
-echo "  - binding_energy_result.json (see this for your binding free energy estimate with error bars and timing)"
+echo "  - binding_energy_result.json"
+echo "  - ${PREFIX}_bound_unbound.npy"
