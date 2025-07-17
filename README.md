@@ -118,7 +118,7 @@ Alternatively, you can run this command manually before continuing the pipeline.
 - `binding_energy_result.json`: Binding free energy estimate, with error bars and wall time
 - `<PREFIX>_bound_unbound.npy`: Bias from Metadynamics saved as a numpy array
 
-### By default, the `<PREFIX>` is set to "output" in `wrapper.sh`
+#### By default, the `<PREFIX>` is set to "output" in `wrapper.sh`
 ---
 
 ## **File Structure**
