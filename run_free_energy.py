@@ -541,10 +541,6 @@ def cleanup_pipeline_directory(prefix="output"):
             print(f"Could not remove {fname}: {e}")
 
 
-# Example usage at the end of your main() function:
-# cleanup_pipeline_directory(prefix=args.output_prefix)
-
-
 def main():
     """
     Main entry point for the pipeline.
