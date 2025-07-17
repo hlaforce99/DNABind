@@ -143,7 +143,7 @@ Alternatively, you can run this command manually before continuing the pipeline.
 - **Simulation:** Minimization, equilibration, and production MD (default 1 ns).
 - **Free Energy:** Classifies each frame as "bound" or "unbound" and estimates  
   $\[
-  \Delta G = -kT \ln\left(\frac{P_\text{bound}}{P_\text{unbound}}\right)
+  \Delta G = -kT * \ln\left(\frac{P_\text{bound}}{P_\text{unbound}}\right)
   \]$
   - **Error bars** are computed by block averaging over the trajectory (number of blocks set by `--blocks`).
 
