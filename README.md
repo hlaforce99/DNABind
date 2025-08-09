@@ -11,7 +11,7 @@ It's fully automated and reproducible: just provide a PDB ID and ligand residue 
 - Python 3.9+
 - Packages (install with conda):
   ```bash
-  conda install -c conda-forge openmm pdbfixer mdtraj deeptime biopython numpy
+  conda install -c conda-forge openmm pdbfixer mdtraj ambertools biopython numpy
   ```
 - (Optional, for ML potential integration):
     - [TorchMD-NET](https://github.com/torchmd/torchmd-net?locale=en) (for ML-based force fields)
