@@ -27,7 +27,6 @@ It's fully automated and reproducible: just provide a PDB ID and ligand residue 
    - **Automatic**: Identifies residues within a specified distance of the ligand.
    - **Manual**: Lets you specify residues by chain and number.
 3. **MD Simulation & Free Energy Estimate**: Runs MD and computes a binding free energy using a simple population estimator, with error bars via block averaging.
-4. **Alchemical Free Energy (FEP/TI)**: Optionally, performs alchemical ligand decoupling (TI) using `run_fep.py` for a more advanced free energy estimate.
 
 ---
 
@@ -35,12 +34,12 @@ It's fully automated and reproducible: just provide a PDB ID and ligand residue 
 
 ### **1. Make the wrapper executable**
 ```bash
-chmod +x wrapper.sh
+chmod +x run.sh
 ```
 
 ### **2. Run the pipeline**
 ```bash
-./wrapper.sh PDB_ID LIGAND_RESNAME [BOX_SIZE_NM] [MD_STEPS] [BLOCKS]
+./run.sh PDB_ID LIGAND_RESNAME [BOX_SIZE_NM] [MD_STEPS] [BLOCKS]
 ```
 - `PDB_ID`: e.g., `7KWK`
 - `LIGAND_RESNAME`: 3-letter ligand code, e.g., `X8V`
@@ -50,41 +49,12 @@ chmod +x wrapper.sh
 
 **Example:**
 ```bash
-./wrapper.sh 7KWK X8V
+./run.sh 7KWK X8V
 ```
 or with custom MD steps and blocks:
 ```bash
-./wrapper.sh 7KWK X8V 1.0 1000000 10
+./run.sh 7KWK X8V 1.0 1000000 10
 ```
-
----
-
-## **Advanced Free Energy Calculation (FEP/TI)**
-
-After the standard MD and population-based binding free energy estimate, the pipeline now supports **alchemical free energy calculations** using thermodynamic integration (TI) via the `run_fep.py` script.
-
-- **How it works:**  
-  The ligand's charges are gradually "turned off" (decoupled) in a series of lambda windows. The free energy change for this process is computed using the trapezoidal rule (TI).
-
-- **Automatic use in pipeline:**  
-  The wrapper script runs `run_fep.py` after the standard pipeline steps. The result is saved as `<PDBID>_system_fep_result.json`.
-
-- **Manual use:**  
-  You can run FEP/TI for any prepared system with:
-  ```bash
-  python run_fep.py \
-    --system <PDBID>_system_system.xml \
-    --integrator <PDBID>_system_integrator.xml \
-    --pdb <PDBID>_system_structure.pdb \
-    --ligand <LIGAND_RESNAME> \
-    --nsteps 5000 \
-    --windows 8 \
-    --output_prefix <PDBID>_system
-  ```
-
-- **Output:**  
-  - `<PDBID>_system_fep_result.json`: Contains ΔG (kJ/mol and kcal/mol), window energies, and errors.
-
 ---
 
 ## **ML Potential Integration (TorchMD-NET)**
@@ -130,8 +100,8 @@ If you want to specify the binding site manually, edit the wrapper script or run
 
 **Edit the wrapper script** to comment out the automatic line and add your manual selection, e.g.:
 ```bash
-# python define_binding_site.py --pdb <PDBID>_system_structure.pdb --ligand <LIGAND> --cutoff 5.0 --out binding_site.json
-python define_binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:10" "A:12" "B:5" --out binding_site.json
+# python binding_site.py --pdb <PDBID>_system_structure.pdb --ligand <LIGAND> --cutoff 5.0 --out binding_site.json
+python binding_site.py --pdb <PDBID>_system_structure.pdb --residues "A:10" "A:12" "B:5" --out binding_site.json
 ```
 Or run this command manually before continuing the pipeline.
 
@@ -145,20 +115,24 @@ Or run this command manually before continuing the pipeline.
 - `binding_site.json`: Binding site residue list (automatic or manual)
 - `traj.pdb`: MD trajectory (PDB format)
 - `binding_energy_result.json`: Binding free energy estimate, with error bars and wall time
-- `<PDBID>_system_fep_result.json`: Alchemical free energy (FEP/TI) result
 
 ---
 
 ## **File Structure**
 
 ```
-├── build.py
-├── define_binding_site.py
-├── run_free_energy.py
-├── run_fep.py
-├── wrapper.sh
+├── src/
+│   ├── analysis.py
+│   ├── binding_site.py
+│   ├── build.py
+│   ├── config.py
+│   ├── main.py
+|   ├── simulation.py
+|   ├── utils.py
 ├── README.md
 ├── environment.yml (optional)
+├── run.sh
+
 ```
 
 ---
@@ -175,8 +149,6 @@ Or run this command manually before continuing the pipeline.
   \Delta G = -kT \ln\left(\frac{P_\text{bound}}{P_\text{unbound}}\right)
   \]$
   - **Error bars** are computed by block averaging over the trajectory (number of blocks set by `--blocks`).
-- **Alchemical Free Energy (TI):** Uses `run_fep.py` to estimate ΔG by gradual decoupling of ligand charges.
-- **Timing:** The total wall time for simulation and analysis is reported and saved in the output JSON.
 
 ---
 
@@ -193,7 +165,6 @@ Or run this command manually before continuing the pipeline.
 - OpenMM: [http://openmm.org/](http://openmm.org/)
 - PDBFixer: [https://github.com/openmm/pdbfixer](https://github.com/openmm/pdbfixer)
 - MDTraj: [http://mdtraj.org/](http://mdtraj.org/)
-- deeptime: [https://deeptime.com/](https://deeptime.com/)
 - TorchMD-NET: [https://github.com/torchmd/torchmd-net](https://github.com/torchmd/torchmd-net)
 
 ---
